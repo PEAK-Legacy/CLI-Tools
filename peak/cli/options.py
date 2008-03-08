@@ -1,24 +1,28 @@
-from peak.api import binding, NOT_GIVEN
-from dispatch import combiners, NoApplicableMethods
-from peak.util.decorators import decorate_class, decorate_assignment
+from peak.util.symbols import NOT_GIVEN
+from peak.util import addons, decorators
 
 __all__ = [
     'parse', 'make_parser', 'get_help', 'Group',
     'Set', 'Add', 'Append', 'Handler', 'reject_inheritance', 'option_handler',
-    'AbstractOption',
+    'attributes', 'AbstractOption', 'InvocationError', 'OptionsRegistry',
 ]
 
-class OptionDispatcher(combiners.MapDispatcher):
+class InvocationError(Exception):
+    """Problem with command arguments or environment"""
 
-    """Method combiner for options"""
+class OptionsRegistry(addons.Registry):
+    """Registry for option settings"""
 
-    def getItems(self,signature,method):
-        return method       # The methods are key-val pairs already
+    reject_all_inheritance = False
 
-    def shouldStop(self,signature,method):
-        return not method   # () means stop, as per 'reject_inheritance' below
-
-OptionRegistry = OptionDispatcher(['ob'])
+    def created_for(self, cls):
+        """Inherit the contents of base classes"""
+        old = dict(self)
+        addons.Registry.created_for(self, cls)
+        if self.reject_all_inheritance:
+            for key in list(self):
+                if key not in old:
+                    self[key] = (None, None)
 
 _optcount = 0
 
@@ -26,10 +30,6 @@ def _gen_key():
     global _optcount
     _optcount +=1
     return _optcount
-
-
-
-
 
 
 
@@ -53,14 +53,12 @@ def reject_inheritance(*names):
     inherited options are ignored, and your class will have no options except
     those you explicitly declare.
     """
-    def callback(klass):
-        # if no names are spec'd, 'method' will equal '()',
-        #    which is the sentinel for "don't inherit anything"
-        method = tuple([(name,(None, None)) for name in names])
-        OptionRegistry[(klass,)] = method
-        return klass
-
-    decorate_class(callback)
+    r = OptionsRegistry.for_enclosing_class()
+    if names:
+        for name in names:
+            r.set(name, (None, None))
+    else:
+        r.reject_all_inheritance = True
 
 
 
@@ -77,6 +75,49 @@ def reject_inheritance(*names):
 
 
 
+
+
+
+
+
+def attributes(*classes, **kw):
+    """Declare options for attributes
+
+    Use in a class body::
+
+        class MyClass(commands.AbstractCommand):
+
+            db_options = options.Group("Database Options")
+
+            options.attributes(
+                dbURL = options.Set(
+                    '--db', type=str, metavar="URL", help="Database URL"
+                ),
+                user = options.Set('--username'),
+                ...
+            )
+
+    Or outside a class body::
+
+        options.attributes(MyClass,
+            dbURL = ...,
+            user = ...,
+        )
+    """
+    def register(r):
+        for attrname, opts in kw.items():
+            try:
+                iter(opts)
+            except TypeError:
+                opts = [opts]
+            for option in opts:
+                option.register(r, attrname)
+
+    if classes:
+        for cls in classes:
+            register(OptionsRegistry(cls))
+    else:
+        register(OptionsRegistry.for_enclosing_class())
 
 
 
@@ -86,16 +127,16 @@ class Group:
     Example usage::
 
         class MyClass(commands.AbstractCommand):
-
             db_options = options.Group("Database Options")
 
-            dbURL = binding.Obtain(
-                PropertyName('myapp.dburl'),
-                [options.Set(
-                    '--db', type=str, metavar="URL", help="Database URL",
-                    group = db_options)
-                ]
+            options.attributes(
+                dbURL = options.Set(
+                    '--db', type=str, metavar="URL", help="Database URL"
+                ),
+                user = options.Set('--username'),
+                ...
             )
+
     When help is displayed for the above class, it will list the '--db' option
     under a heading with the title "Database Options", along with any other
     options that have their 'group' set to the 'db_options' object.
@@ -115,7 +156,7 @@ class Group:
         return "Group"+`(self.title,self.description,self.sortKey)`
 
     def makeGroup(self,parser):
-        from peak.util.optparse import OptionGroup
+        from optparse import OptionGroup
         return ((self.sortKey,self.sort_stable),
             OptionGroup(parser,self.title,self.description)
         )
@@ -123,25 +164,34 @@ class Group:
 
 class AbstractOption:
     """Base class for option metadata objects"""
-
-    repeatable = True; sortKey = 0
+    repeatable = True
+    sortKey = 0
     metavar = help = group = None
     value = type = option_names = NOT_GIVEN
 
-    def __init__(self,*option_names,**kw):
-        kw['option_names'] = option_names
-        binding.initAttrs(self,kw.iteritems())
+    def __init__(self, *option_names, **kw):
+        klass = self.__class__
+        for k,v in kw.iteritems():
+            if hasattr(klass,k):
+                setattr(self,k,v)
+            else:
+                raise TypeError(
+                    "%s constructor has no keyword argument %s" % (klass, k)
+                )
+
         if not option_names:
             raise TypeError(
                 "%s must have at least one option name"
                 % self.__class__.__name__
             )
+        self.option_names = option_names
         for option in option_names:
             if not option.startswith('-') or option.startswith('---'):
                 raise ValueError(
                     "Invalid option name %r:"
                     " option names must begin with '-' or '--'" % (option,)
                 )
+
         if (self.type is NOT_GIVEN) == (self.value is NOT_GIVEN):
             raise TypeError(
                 "%s options must have a value or a type, not both or neither"
@@ -152,13 +202,13 @@ class AbstractOption:
             raise TypeError(
                 "'metavar' is meaningless for options without a type"
             )
+
         if self.type is not NOT_GIVEN:
             self.nargs = 1
             if self.metavar is None:
                 self.metavar = self.type.__name__.upper()
         else:
             self.nargs = 0
-
         self.sort_stable = _gen_key()
 
 
@@ -168,7 +218,7 @@ class AbstractOption:
         if optmap is not None:
             options = [opt for opt in options if optmap.get(opt) is self]
 
-        from peak.util.optparse import make_option
+        from optparse import make_option
         popt = make_option(
             action="callback", nargs=self.nargs, callback_args=(attrname,),
             callback = self.callback, metavar=self.metavar, help=self.help,
@@ -181,12 +231,17 @@ class AbstractOption:
             try:
                 return self.type(value)
             except ValueError:
-                from commands import InvocationError
                 raise InvocationError(
                     "%s: %r is not a valid %s" % (option,value,self.metavar)
                 )
         else:
             return self.value
+
+
+    def register(self, registry, attrname):
+        for optname in self.option_names:
+            registry.set(optname, (attrname,self))
+
 
 
     def check_repeat(self,option,parser):
@@ -199,8 +254,35 @@ class AbstractOption:
             parser.use_counts[self] = count
 
             if count>1:
-                from commands import InvocationError
                 raise InvocationError("%s can only be used once" % option)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class Set(AbstractOption):
@@ -236,13 +318,13 @@ class Handler(AbstractOption):
     """Invoke a handler method when the option appears on the command line"""
 
     repeatable = False
+    function = None
 
     def callback(self, option, opt, value, parser, attrname):
         self.check_repeat(option,parser)
         self.function(
             parser.values,parser,opt,self.convert(option,value),parser.rargs
         )
-
 
 def parse(ob,args,**kw):
     """Parse 'args' into 'ob', returning non-option arguments
@@ -302,14 +384,13 @@ def make_parser(ob,**kw):
     prog = kw.setdefault('prog','')+':'
     kw.setdefault('add_help_option',False)
 
-    from peak.util.optparse import OptionParser
+    from optparse import OptionParser
     parser = OptionParser(**kw)
     if not intersperse:
         parser.disable_interspersed_args()
 
     def _exit_parser(status=0, msg=None):
         if msg:
-            from commands import InvocationError
             if msg.startswith(prog):
                 msg = msg[len(prog):]
             raise InvocationError(msg.strip())
@@ -317,10 +398,11 @@ def make_parser(ob,**kw):
             raise SystemExit(status)
 
     parser.exit = _exit_parser
-    try:
-        optinfo = OptionRegistry[ob,].items()
-    except NoApplicableMethods:
-        optinfo = []
+    optinfo = OptionsRegistry(ob.__class__).items()
+
+
+
+
 
 
 
@@ -387,24 +469,24 @@ def option_handler(*option_names, **kw):
     options.  It may also manipulate other attributes of 'parser', if desired.
     """
 
-    option = Handler(*option_names,**kw)
-
-    def class_callback(klass):
-        binding.declareAttribute(klass,None,option)
-        return klass
-
     def decorator(frame,name,func,old_locals):
-        option.function = func
-        decorate_class(class_callback,frame=frame)
+        Handler(function=func, *option_names,**kw).register(
+            OptionsRegistry.for_frame(frame), None
+        )
         return func
 
-    return decorate_assignment(decorator)
+    return decorators.decorate_assignment(decorator)
 
 
-[binding.declareAttribute.when(AbstractOption)]
-def _declare_option(classobj,attrname,option):
-    OptionRegistry[(classobj,)] = tuple(
-        [(optname,(attrname,option)) for optname in option.option_names]
-    )
+
+
+
+
+
+
+
+
+
+
 
 
