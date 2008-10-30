@@ -1,6 +1,6 @@
-============================================================
-Command-line Option Processing with ``peak.running.options``
-============================================================
+========================================================
+Command-line Option Processing with ``peak.cli.options``
+========================================================
 
 .. contents:: **Table of Contents**
 
@@ -9,19 +9,19 @@ Command-line Option Processing with ``peak.running.options``
 Preface
 -------
 
-The ``peak.running.options`` module lets you define command-line options for
+The ``peak.cli.options`` module lets you define command-line options for
 a class (optionally inheriting options from base classes), and the ability
 to parse those options using the Python ``optparse`` library.
 
-``options`` extends optparse by tying option metadata to classes (using
+``options`` extends ``optparse`` by tying option metadata to classes (using
 a ``peak.util.addons.Registry``), and allowing classes to inherit options from
 their base class(es).  It also uses a much more compact notation for specifying
 options than that provided by the "raw" ``optparse`` module, that generally
 requires less typing to specify an option.
 
-For our examples, we'll need to use the PEAK API and the ``options`` module::
+For our examples, we'll need to use the ``options`` module::
 
-    >>> from peak.running import options
+    >>> from peak.cli import options
 
 
 -------------
