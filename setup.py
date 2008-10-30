@@ -29,7 +29,8 @@ setup(
     version=PACKAGE_VERSION,
     description="Plugin-capable cmdline apps w/option parsing, for wx, Twisted, and more",
     long_description = open('README.txt').read(), # get_description(),
-    install_requires=['Plugins', 'AddOns', 'Trellis', 'DecoratorTools'],
+    install_requires=['AddOns', 'DecoratorTools', 'SymbolType'],
+    # 'Plugins', 'Trellis', -- not actually used yet
     author="Phillip J. Eby",
     author_email="peak@eby-sarna.com",
     license="PSF or ZPL",
@@ -38,4 +39,3 @@ setup(
     packages = PACKAGES,
     namespace_packages = ['peak'],
 )
-
